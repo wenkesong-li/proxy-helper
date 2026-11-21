@@ -1,0 +1,11 @@
+.DS_Store
+**/bin/
+**/obj/
+*.app/
+WindowsExe/
+release/
+*.pdb
+*.zip
+*.exe
+*.md
+*.sql
