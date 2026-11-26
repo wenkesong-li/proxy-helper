@@ -73,23 +73,28 @@ try {
 }
 
 function Find-Proxy {
-    $settings = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
-    if ($settings.ProxyEnable -eq 1 -and $settings.ProxyServer) {
-        $server = [string]$settings.ProxyServer
-        if ($server -match '(?:^|;)http=([^;]+)') { return "http://$($Matches[1])" }
-        if ($server -notmatch '=') { if ($server -match '^http://') { return $server }; return "http://$server" }
+    $candidates=New-Object 'System.Collections.Generic.List[string]'
+    $settings=Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
+    if($settings.ProxyEnable -eq 1 -and $settings.ProxyServer){
+        $server=[string]$settings.ProxyServer
+        if($server -match '(?:^|;)https?=([^;]+)'){$candidates.Add('http://'+$Matches[1])}
+        elseif($server -notmatch '='){$candidates.Add($(if($server -match '^http://'){$server}else{'http://'+$server}))}
     }
-    foreach ($scope in @('User','Machine','Process')) {
-        foreach ($key in @('HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')) {
-            $value = [Environment]::GetEnvironmentVariable($key,$scope)
-            if ($value -match '^http://') { return $value }
+    # Discover listeners owned by known proxy clients instead of assuming a fixed port.
+    $owners=@(Get-Process -ErrorAction SilentlyContinue|Where-Object {$_.ProcessName -match '^(mihomo|clash.*|v2ray|xray|sing-box|singbox|surge|hysteria.*)$'}|ForEach-Object {$_.Id})
+    if($owners.Count){
+        foreach($listener in @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue|Where-Object {$owners -contains $_.OwningProcess -and $_.LocalAddress -in @('127.0.0.1','0.0.0.0','::','::1')}|Sort-Object LocalPort -Unique)){
+            $candidates.Add('http://127.0.0.1:'+$listener.LocalPort)
         }
     }
-    $path = Join-Path $HOME '.codex\.env'
-    if (Test-Path $path) {
-        foreach ($line in Get-Content $path) {
-            if ($line -match '^\s*(?:HTTP_PROXY|HTTPS_PROXY)\s*=\s*(http://\S+)\s*$') { return $Matches[1] }
-        }
+    foreach($scope in @('User','Machine','Process')){foreach($key in @('HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')){$value=[Environment]::GetEnvironmentVariable($key,$scope);if($value -match '^http://'){$candidates.Add($value)}}}
+    $path=Join-Path $HOME '.codex\.env'
+    if(Test-Path $path){foreach($line in Get-Content $path){if($line -match '^\s*(?:HTTP_PROXY|HTTPS_PROXY)\s*=\s*(http://\S+)\s*$'){$candidates.Add($Matches[1])}}}
+    $script:detectionDetails=@()
+    foreach($candidate in @($candidates|Select-Object -Unique|Select-Object -First 24)){
+        $reason=[ProxyConnection]::Probe($candidate)
+        $script:detectionDetails+="$candidate : $(if($reason){$reason}else{'HTTP CONNECT 可用'})"
+        if(-not $reason){return $candidate}
     }
     return ''
 }
@@ -199,12 +204,34 @@ function Get-Report {
 # Verify in a worker task so the UI stays responsive during network timeouts.
 Add-Type @'
 #pragma warning disable
-using System; using System.Net; using System.Threading.Tasks;
+using System; using System.Net; using System.Net.Sockets; using System.Text; using System.Threading.Tasks;
 public static class ProxyConnection {
+ public static string Probe(string proxy) {
+  try {
+   var u=new Uri(proxy);
+   using(var socket=new TcpClient()) {
+    var connect=socket.ConnectAsync(u.Host,u.Port);
+    if(!connect.Wait(350))return "TCP 连接超时";
+    using(var stream=socket.GetStream()) {
+     stream.ReadTimeout=1200;stream.WriteTimeout=1200;
+     var data=Encoding.ASCII.GetBytes("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n".Replace("\\r\\n","\r\n"));
+     stream.Write(data,0,data.Length);var bytes=new byte[512];int count=stream.Read(bytes,0,bytes.Length);
+     string reply=Encoding.ASCII.GetString(bytes,0,count);
+     if(reply.StartsWith("HTTP/1.1 200")||reply.StartsWith("HTTP/1.0 200"))return "";
+     return "不是可用的 HTTP CONNECT 代理："+reply.Split('\n')[0].Trim();
+    }
+   }
+  } catch(Exception e){return "端口/协议验证失败："+e.GetBaseException().Message;}
+ }
  public static Task<string> Test(string proxy) {
   return Task.Factory.StartNew<string>(() => {
-   try { var r=WebRequest.Create("https://example.com"); r.Proxy=new WebProxy(proxy); r.Timeout=8000; using(var response=r.GetResponse()) {} return ""; }
-   catch(Exception e) { return e.Message; }
+   string probe=Probe(proxy);if(probe!="")return probe;
+   string failure="";
+   foreach(string target in new[]{"https://example.com","https://www.microsoft.com"}) {
+    try {var r=WebRequest.Create(target);r.Proxy=new WebProxy(proxy);r.Timeout=5000;using(var response=r.GetResponse()){}return "";}
+    catch(Exception e){failure+=target+": "+e.GetBaseException().Message+"; ";}
+   }
+   return "HTTP CONNECT 已建立，但外网 HTTPS 测试失败（请检查节点/TLS/规则）："+failure;
   });
  }
 }
@@ -403,7 +430,7 @@ function Get-DetectionStatus([string]$proxy){
         if($map[$key] -ne $expected[$key]){$issues+=".env/$key"}
     }
     if(-not $issues.Count){return "检测地址 $proxy · 已应用：用户、全局环境和 .env 均一致。"}
-    return "检测地址 $proxy · 有 $($issues.Count) 项缺失或不同，请应用同步。明细见当前配置。"
+    return "检测地址 $proxy · 有 $($issues.Count) 项保存值与当前可用端口不同（不代表检测失败），请应用同步。"
 }
 function Wait-Elevated($process){
     while(-not $process.HasExited){[Windows.Forms.Application]::DoEvents();Start-Sleep -Milliseconds 60;$process.Refresh()}
@@ -441,7 +468,7 @@ $summary=Add-Label $overview '' 20 20 880 78 11; $summary.BackColor=[Drawing.Col
 $null=Add-Label $overview '代理地址' 20 110 600 30 15
 $null=Add-Label $overview '检测和测试连接不会写入配置；你也可以手动填写 HTTP 代理。' 20 150 880 30
 $field=New-Object Windows.Forms.TextBox; $field.SetBounds(20,190,875,35); $field.Font=New-Object Drawing.Font('Consolas',15); $field.Text=Find-Proxy; $overview.Controls.Add($field)
-$null=Add-Button $overview '重新检测' 20 250 150 { $value=Find-Proxy; if($value){$field.Text=$value; $status.Text=Get-DetectionStatus $value}else{$status.Text='未找到代理，请开启系统代理或手动填写。'}; Refresh-Views }
+$null=Add-Button $overview '重新检测' 20 250 150 { $value=Find-Proxy; if($value){$field.Text=$value; $status.Text=Get-DetectionStatus $value}else{$status.Text='没有找到验证通过的 HTTP 代理。'+($script:detectionDetails -join '；')}; Refresh-Views }
 $null=Add-Button $overview '测试连接' 185 250 150 { Start-Operation 'test' }
 $apply=Add-Button $overview '应用当前地址' 350 250 190 { Start-Operation 'apply' }; $apply.BackColor=[Drawing.Color]::FromArgb(10,125,135); $apply.ForeColor=[Drawing.Color]::White; $apply.FlatAppearance.MouseOverBackColor=[Drawing.Color]::FromArgb(8,100,110); $apply.FlatAppearance.MouseDownBackColor=[Drawing.Color]::FromArgb(6,80,90)
 $null=Add-Button $overview '一键检测并应用' 555 250 220 { $value=Find-Proxy; if($value){$field.Text=$value; Start-Operation 'apply'}else{$status.Text='未检测到代理，请开启系统代理或手动填写。'} }
@@ -497,20 +524,20 @@ function Start-Operation([string]$mode) {
  $uri=$null; $proxy=$field.Text.Trim().TrimEnd('/')
  if(-not [Uri]::TryCreate($proxy,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'http' -or $proxy -notmatch ':\d+/?$' -or $uri.Port -lt 1 -or $uri.Port -gt 65535 -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or $uri.AbsolutePath -ne '/') {$status.Text='请输入有效的 http://主机:端口，不支持账号密码。'; return}
  $script:operationMode=$mode; $script:operationProxy=$proxy; $script:operationStart=Get-Date
- $script:networkPending=$true; Set-Loading $true '正在验证代理 HTTPS 连接，最长等待 8 秒…'
+ $script:networkPending=$true; Set-Loading $true '正在验证代理 HTTPS 连接，分阶段验证端口、HTTP 协议及外网 HTTPS…'
  $script:networkTask=[ProxyConnection]::Test($proxy); $script:networkTimer.Start()
 }
 $script:networkTimer.Add_Tick({
  if(-not $script:networkTask.IsCompleted){return}; $script:networkTimer.Stop()
  try {
   $failure=$script:networkTask.Result
-  if($failure){throw "连接失败，未修改配置：$failure"}
+  if($failure){throw "验证未通过，尚未开始写入配置：$failure"}
   switch($script:operationMode){
    'test' {$status.Text="连接成功（$([int]((Get-Date)-$script:operationStart).TotalMilliseconds) ms）。仅测试，未写入配置。"; Write-History $status.Text}
    'startup' {Set-Startup $script:operationProxy;$startupOption.Checked=$true;$status.Text='已更新登录启动项。';Write-History $status.Text}
    'apply' {Apply-Proxy $script:operationProxy $true}
   }
- } catch {$status.Text='操作未完成，若已开始写入则可能有部分配置更新：'+$_.Exception.Message; Write-History $status.Text}
+ } catch {$status.Text=$_.Exception.Message; Write-History $status.Text}
  finally {$script:networkPending=$false;Set-Loading $false; Refresh-Views; [void][Windows.Forms.MessageBox]::Show($form,$status.Text,'操作结果','OK',$(if($status.Text -like '操作未完成*'){'Error'}else{'Information'}))}
 })
 Refresh-Views
