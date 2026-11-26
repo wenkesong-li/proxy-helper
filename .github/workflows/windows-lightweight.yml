@@ -15,7 +15,7 @@ jobs:
         run: |
           New-Item output -ItemType Directory | Out-Null
           $compiler = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          & $compiler /nologo /target:winexe /platform:x64 /optimize+ /out:output/ProxyHelper.exe /win32icon:Windows/ProxyHelper.ico /resource:Windows/ProxyHelper.ps1,ProxyHelper.ps1 /resource:Windows/ProxyHelper.ico,ProxyHelper.ico /resource:Windows/ChatGPT-Green.ico,ChatGPT-Green.ico lightweight/Program.cs
+          & $compiler /nologo /target:winexe /platform:x64 /optimize+ /out:output\ProxyHelper.exe /win32icon:Windows\ProxyHelper.ico /resource:Windows\ProxyHelper.ps1,ProxyHelper.ps1 /resource:Windows\ProxyHelper.ico,ProxyHelper.ico /resource:Windows\ChatGPT-Green.ico,ChatGPT-Green.ico lightweight\Program.cs
           if ($LASTEXITCODE -ne 0) { throw 'Compilation failed' }
           if ((Get-Item output/ProxyHelper.exe).Length -gt 2MB) { throw 'Unexpected package growth' }
       - name: Verify real startup
