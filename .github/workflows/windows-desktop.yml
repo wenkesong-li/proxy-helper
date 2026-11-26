@@ -1,0 +1,38 @@
+name: Windows desktop build
+on:
+  workflow_dispatch:
+  push:
+    paths: ['desktop/**', '.github/workflows/windows-desktop.yml']
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+      - name: Start packaged app and confirm window
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem desktop/dist/win-unpacked/ProxyHelper.exe).FullName
+          $process = Start-Process $exe -PassThru
+          try {
+            $ready = $false
+            for ($i=0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 1
+              $process.Refresh()
+              if ($process.HasExited) { throw "Application exited: $($process.ExitCode)" }
+              if ($process.MainWindowHandle -ne 0) { $ready=$true; break }
+            }
+            if (-not $ready) { throw 'No application window appeared' }
+          } finally { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProxyHelper-Windows-preview
+          path: desktop/dist/*.zip

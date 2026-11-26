@@ -9,3 +9,6 @@ release/
 *.exe
 *.md
 *.sql
+
+node_modules/
+desktop/dist/
