@@ -1,0 +1,39 @@
+name: Windows lightweight build
+on:
+  push:
+    paths: ['lightweight/**', 'Windows/**', '.github/workflows/windows-lightweight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile using Windows built-in .NET Framework
+        shell: pwsh
+        run: |
+          New-Item output -ItemType Directory | Out-Null
+          $compiler = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $compiler /nologo /target:winexe /platform:x64 /optimize+ /out:output/ProxyHelper.exe /win32icon:Windows/ProxyHelper.ico /resource:Windows/ProxyHelper.ps1,ProxyHelper.ps1 /resource:Windows/ProxyHelper.ico,ProxyHelper.ico /resource:Windows/ChatGPT-Green.ico,ChatGPT-Green.ico lightweight/Program.cs
+          if ($LASTEXITCODE -ne 0) { throw 'Compilation failed' }
+          if ((Get-Item output/ProxyHelper.exe).Length -gt 2MB) { throw 'Unexpected package growth' }
+      - name: Verify real startup
+        shell: pwsh
+        run: |
+          $process=Start-Process (Resolve-Path output/ProxyHelper.exe) -PassThru
+          try {
+            $ready=$false
+            for($i=0;$i -lt 30;$i++) {
+              Start-Sleep -Seconds 1
+              $forms=Get-Process powershell -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -like '代理配置助手*'}
+              if($forms){$ready=$true;break}
+              $process.Refresh()
+              if($process.HasExited){throw 'Launcher exited before window appeared'}
+            }
+            if(-not $ready){throw 'Window did not appear'}
+          } finally { taskkill /PID $process.Id /T /F 2>$null }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProxyHelper-Windows-Lightweight
+          path: output/ProxyHelper.exe
