@@ -1,6 +1,6 @@
 {
   "name": "proxy-helper-desktop",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "description": "Proxy Helper desktop",
   "author": "Proxy Helper",
   "main": "main.cjs",
@@ -17,13 +17,18 @@
     "productName": "ProxyHelper",
     "files": [
       "*.cjs",
-      "*.html",
-      "*.ps1"
+      "*.html"
     ],
     "win": {
       "target": "zip",
       "icon": "../Windows/ProxyHelper.ico",
       "signExecutable": false
-    }
+    },
+    "extraResources": [
+      {
+        "from": "backend.ps1",
+        "to": "backend.ps1"
+      }
+    ]
   }
 }

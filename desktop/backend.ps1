@@ -1,6 +1,7 @@
 ﻿param([string]$Action='status',[string]$Proxy='')
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
+$OutputEncoding=[Console]::OutputEncoding
 $keys=@('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','NODE_USE_ENV_PROXY')
 $dir=Join-Path $env:LOCALAPPDATA 'ProxyHelper';[IO.Directory]::CreateDirectory($dir)|Out-Null
 $envPath=Join-Path $HOME '.codex\.env';$runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'

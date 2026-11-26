@@ -21,6 +21,12 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Get-ChildItem desktop/dist/win-unpacked/ProxyHelper.exe).FullName
+          $backend = Join-Path (Split-Path $exe) 'resources/backend.ps1'
+          if (-not (Test-Path $backend)) { throw 'External backend script missing' }
+          $result = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $backend -Action status
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged backend status command failed' }
+          $state = $result | ConvertFrom-Json
+          if (-not $state.ok) { throw 'Invalid backend response' }
           $process = Start-Process $exe -PassThru
           try {
             $ready = $false
